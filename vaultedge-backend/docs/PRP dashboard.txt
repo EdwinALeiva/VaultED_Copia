@@ -1,0 +1,311 @@
+Here’s a **Dashboard PRP (focused)** you can hand to your AI code assistant and devs. It keeps your **left (Vaults)** and **middle (Safe-Deposit Boxes)** panels as-is and specifies the **right panel** (insights + alerts) with clear metrics, visuals, roles, data, API, and acceptance criteria.
+
+---
+
+# VaultEdge — Dashboard PRP (Focused on Insights, KPIs & Alerts)
+
+> Scope: What to build for the **Dashboard** (landing page). Left panel = Vaults, middle = Safe-Deposit Boxes list (filtered by selected vault). This PRP defines the **right panel** and the **summary KPIs**, the **alerts model**, **role names & permissions**, data formulas, and UX rules.
+> Terminology: **Vault** (root + sub-vaults; ES label: *Bóveda Central* for root), **Safe-Deposit Box** (“SafeBox”), **File** (versioned).
+> Billing: per **SafeBox**; each SafeBox has capacity quota and a **renewal due date** → **Grace → Blocked** if not renewed.
+
+---
+
+## 0) Roles & Permissions (renamed; use everywhere)
+
+### Vault-level roles
+
+* **Vault Owner** (was Owner-Admin): full control on the vault and sub-vaults; billing visibility across its boxes.
+* **Vault Manager** (was Manager): manage sub-vaults, invite users to vault scope; no billing changes.
+* **Vault Viewer** (was Read-Only): read-only vault metadata, box list, and dashboard analytics (no file access).
+
+### SafeBox-level roles
+
+* **Box Owner** (was owner): full control; can approve dual-key downloads; can renew billing.
+* **Box Manager** (was manager): manage members, upload files, request approvals; cannot change plan.
+* **Box Viewer (Request Download)** (was “read but not download”): can view metadata & previews; **download requires dual-key** approval (owner + counter-party).
+* **Audit Viewer** (logs-only from client side): read audit & statistics; no content or previews.
+
+> Enforcement: Dashboard numbers and drill-downs must respect RBAC; users only see content they’re allowed to.
+
+---
+
+## 1) Layout (unchanged + additions)
+
+* **Left panel (keep):** Vaults tree (Root Vault + sub-vaults), counts of boxes per node.
+* **Middle panel (keep):** Safe-Deposit Boxes list for selected vault (cards/rows showing name, utilization bar, created date, type, security policy, file count).
+* **Right panel (this spec):**
+
+  * **KPI Cards** (top)
+  * **Visuals** (center)
+  * **Billing & Renewals** (list)
+  * **Security & Approvals** (list)
+  * **Alerts** (bottom, keep current but enhance severity)
+
+Grid tip (desktop ≥1280px): right panel width \~ 360–420px; 16px spacing; sticky on scroll.
+
+---
+
+## 2) KPI Cards (top of right panel)
+
+Show 4–6 compact KPI tiles. Refresh every 30s (or manual refresh).
+
+1. **Total Boxes (in vault)**
+
+   * Value: count of SafeBoxes in the selected vault (including children optional toggle).
+   * Secondary: change vs last 30 days.
+
+2. **Storage Used / Capacity (in vault)**
+
+   * Value: `sum(box.usedBytes)` and `sum(box.capacityBytes)`; bar with utilization %.
+   * Secondary: **Average Utilization** across boxes.
+
+3. **Active Files**
+
+   * Value: count of current file versions in all boxes.
+   * Secondary: uploads last 7 days.
+
+4. **Approvals Pending**
+
+   * Value: number of **pending dual-key requests** across boxes in vault.
+   * Secondary: median age of pending approvals.
+
+5. **At-Risk Boxes**
+
+   * Value: count of boxes with **utilization ≥ 80%** or **renewal due ≤ 14 days**.
+   * Secondary: split `Capacity Risk / Renewal Risk`.
+
+6. **Blocked / In Grace**
+
+   * Value: `blockedCount / graceCount`.
+   * Secondary: soonest block date.
+
+**Style:** compact cards with icon, big value, small label, thin trend sparkline (7-day). Colors: blue for neutral, amber for risk, red for critical, green for OK. Dark-mode compatible.
+
+---
+
+## 3) Visualizations (center of right panel)
+
+Pick 2–3 visuals that are immediately actionable. Use **donut/treemap + time series + top list**.
+
+### V1) File Size Distribution (by count)
+
+* **Donut** with bins (same as your screenshot; keep consistent):
+  `R1 <1MB`, `R2 1–10MB`, `R3 10–100MB`, `R4 100MB–1GB`, `R5 1–3GB`, `R6 >3GB`.
+* Tooltip: count + % + example top files link (“Show top files in R4”).
+* Click a slice → **filters** the middle list to the matching bin.
+
+### V2) Storage Usage Trend (last 90 days)
+
+* **Area chart** of total used bytes in selected vault (stacked by top 3 boxes + “Others”).
+* Tooltip: date, total, per-box contributions.
+* Brush or mini-navigator for 14/30/90 days.
+
+### V3) Top 5 Boxes by Utilization
+
+* **Horizontal bars**: `used / capacity` with a % badge.
+* Right-aligned next action: **Go to box**; if ≥95% show **badge: CRITICAL**.
+
+> Mobile fallback: collapse V2 and V3 into accordions; keep donut.
+
+---
+
+## 4) Billing & Renewals (list)
+
+* Section title: **Upcoming Renewals**
+* Rows: **SafeBox name**, **due date**, **days left**, **plan**, **actions**: “Renew”, “View plan”.
+* Badges:
+
+  * `DUE TODAY` (red), `≤ 7 days` (amber), `≤ 30 days` (blue).
+* Sorting: earliest due first.
+* RBAC: only Owners see **Renew** button; others see **View plan**.
+
+---
+
+## 5) Security & Approvals
+
+* Section title: **Dual-Key Approvals**
+
+* Rows: **Request type** (download/replace/delete), **box**, **file**, **requested by**, **age**.
+
+* Actions: **Approve** / **Deny** (if role allows), **Open request**.
+
+* Empty state: “No pending approvals.”
+
+* Section title: **Security Signals**
+
+  * **Denied download attempts (24h)**
+  * **Invalid signature attempts (24h)**
+  * **Users without registered keys** (count)
+  * Link: “View Audit Logs”
+
+---
+
+## 6) Alerts (keep, but formalize)
+
+**Severity:** `INFO, NOTICE, WARNING, CRITICAL`.
+**Alert types & rules (examples)**
+
+* **Capacity Warning**: `utilization >= 80%` → WARNING
+* **Capacity Critical**: `utilization >= 95%` → CRITICAL
+* **Renewal Due Soon**: `daysToDue <= 14` → WARNING
+* **Blocked** (not renewed beyond grace): status = BLOCKED → CRITICAL
+* **Dual-Key Pending Age**: pending > 48h → NOTICE; > 5d → WARNING
+* **Failed/Denied Attempts**: ≥ 3 in 24h → WARNING; ≥ 10 → CRITICAL
+* **Missing Recipient Key**: new member without public key → NOTICE
+
+**Alert row fields:** icon, title, resource (vault/box/file), severity badge, short cause, timestamp, **Go to…** CTA.
+**Action:** clicking an alert applies filters and scrolls the middle panel to the relevant box.
+
+---
+
+## 7) Data Model & Formulas
+
+**Per SafeBox**
+
+* `capacityBytes` (from plan)
+* `usedBytes` = sum of **current** version sizes across files in the box
+* `utilizationPct` = `usedBytes / capacityBytes * 100`
+* `fileCount` = number of files (current versions)
+* `dueDate`, `status ∈ {ACTIVE, GRACE, BLOCKED}`
+* `daysToDue` = `dueDate - now` (days)
+* `risk` = `utilizationPct ≥ 80` OR `daysToDue ≤ 14`
+
+**Per Vault (aggregate of visible boxes)**
+
+* sums of used/capacity, counts of files/boxes, counts of statuses.
+
+**File size bins** (by count)
+
+* R1: `<1MB`
+* R2: `1–10MB`
+* R3: `10–100MB`
+* R4: `100MB–1GB`
+* R5: `1–3GB`
+* R6: `>3GB`
+
+**Trend metric (daily)**
+
+* snapshot usedBytes per box → `vault_used_daily[date] = Σ box.usedBytes(date)`.
+
+---
+
+## 8) API (minimum needed for the dashboard)
+
+```
+GET  /api/v1/vaults/{vaultId}/summary
+  -> { boxes, files, usedBytes, capacityBytes, avgUtilPct, pendingApprovals, atRisk, graceCount, blockedCount }
+
+GET  /api/v1/vaults/{vaultId}/size-distribution
+  -> { bins: [{label:"<1MB", count: N}, ...] }
+
+GET  /api/v1/vaults/{vaultId}/usage-trend?days=90
+  -> [{ date:"2025-08-11", usedBytes:..., topBoxes:[{boxId, name, usedBytes}, ...]}]
+
+GET  /api/v1/vaults/{vaultId}/top-boxes?metric=utilization&limit=5
+  -> [{boxId, name, usedBytes, capacityBytes, utilizationPct, status}]
+
+GET  /api/v1/vaults/{vaultId}/renewals?days=60
+  -> [{boxId, name, dueDate, daysToDue, plan, status}]
+
+GET  /api/v1/vaults/{vaultId}/approvals/pending
+  -> [{approvalId, action, boxId, boxName, fileId, fileName, requestedBy, ageHours}]
+
+GET  /api/v1/vaults/{vaultId}/security-signals
+  -> { denied24h, invalidSig24h, usersMissingKeys }
+
+GET  /api/v1/vaults/{vaultId}/alerts?limit=20
+  -> [{id, severity, title, resourceType, resourceId, at, details}]
+```
+
+> All endpoints must respect RBAC; aggregate only across resources the caller can see.
+
+---
+
+## 9) UX & Visual Style (right panel)
+
+* **Charts:** donut (or treemap), area chart, horizontal bars.
+* **Colors:** use current brand palette; reserve red/amber for risk/critical.
+* **Tooltips:** always show **absolute** + **percentage**.
+* **Interaction:** clicking a chart slice or bar **filters** the middle list; show an inline pill filter near the list header.
+* **Performance:** load KPIs first (<200ms target), then lazy-load charts; cache aggregates for 30–60s.
+* **A11y:** keyboard navigation for cards and chart legends; color contrast AA; text alternatives.
+
+---
+
+## 10) Test Scenarios (must pass)
+
+1. **RBAC:** A Vault Viewer sees KPIs and charts but cannot open renew or approve actions; Owners can.
+2. **Capacity Alerts:** when a box crosses 80% utilization, a **WARNING** appears; ≥95% shows **CRITICAL**.
+3. **Renewal Flow:** boxes with `dueDate <= now` → status `GRACE`; after `graceDays` → `BLOCKED`; both reflected in KPI counts and alerts.
+4. **Drill-down:** clicking a donut slice filters the SafeBox list to that size bin.
+5. **Approvals Aging:** a >48h pending request appears in “Dual-Key Approvals” with correct age.
+6. **Trend:** usage trend aggregates correctly when boxes are added/removed.
+7. **Dark mode:** all cards/charts readable; alerts badges retain contrast.
+
+---
+
+## 11) Prompt Hooks (for your AI assistant)
+
+* **“Create a `RightPanel` React component with KPI cards (6), donut, area chart (90d), and ‘Top 5 Boxes’ bars. Props accept pre-aggregated DTOs from the API. Add click handlers to emit filter events for the middle list.”**
+* **“Implement `/vaults/{id}/summary`, `/size-distribution`, `/usage-trend`, `/top-boxes`, `/renewals`, `/approvals/pending`, `/security-signals`, `/alerts` in Spring Boot. Use SQL views/materialized tables to serve aggregates quickly; cache responses 30s.”**
+* **“Add alert evaluation jobs: capacity, renewal, approvals aging, failed attempts; write to `alerts` table with severity levels and expiry.”**
+* **“Wire RBAC so aggregates include only the boxes the caller can see; add unit tests for Owner/Manager/Viewer.”**
+
+---
+
+## 12) Data Structures (DTOs)
+
+```ts
+// GET /vaults/{id}/summary
+type VaultSummary = {
+  boxes: number, files: number,
+  usedBytes: number, capacityBytes: number, avgUtilPct: number,
+  pendingApprovals: number, atRisk: number, graceCount: number, blockedCount: number
+};
+
+// GET /vaults/{id}/size-distribution
+type SizeDistribution = { bins: { label: string; range: string; count: number; pct: number }[] };
+
+// GET /vaults/{id}/usage-trend
+type UsageTrend = { date: string; usedBytes: number; topBoxes: { boxId: string; name: string; usedBytes: number }[] }[];
+
+// GET /vaults/{id}/top-boxes
+type TopBox = { boxId: string; name: string; usedBytes: number; capacityBytes: number; utilizationPct: number; status: 'ACTIVE'|'GRACE'|'BLOCKED' };
+
+// GET /vaults/{id}/renewals
+type RenewalRow = { boxId: string; name: string; dueDate: string; daysToDue: number; plan: string; status: 'ACTIVE'|'GRACE'|'BLOCKED' };
+
+// GET /vaults/{id}/approvals/pending
+type PendingApproval = { approvalId: string; action: 'download'|'replace'|'delete'; boxId: string; boxName: string; fileId: string; fileName: string; requestedBy: string; ageHours: number };
+
+// GET /vaults/{id}/security-signals
+type SecuritySignals = { denied24h: number; invalidSig24h: number; usersMissingKeys: number };
+
+// GET /vaults/{id}/alerts
+type AlertRow = { id: string; severity: 'INFO'|'NOTICE'|'WARNING'|'CRITICAL'; title: string; resourceType: 'VAULT'|'BOX'|'FILE'; resourceId: string; at: string; details?: string };
+```
+
+---
+
+## 13) Performance & Caching
+
+* Precompute nightly: size bin counts for last 30d; build `vault_used_daily`.
+* Recompute on write: when a file version is created/deleted, update `box.usedBytes` and vault aggregates.
+* Cache layer (60s charts / 30s KPIs). Use ETag/Last-Modified where possible.
+
+---
+
+## 14) Acceptance: Definition of Done
+
+* Right panel delivers **KPI + Donut + Trend + Top5 + Renewals + Approvals + Security + Alerts** with interactions and RBAC.
+* API endpoints implemented, tested, and documented (OpenAPI).
+* A11y, dark mode, and performance budgets met.
+* Alerts populate correctly with severities and deep links.
+* Demo script: show filtering from a donut slice and resolving a pending approval.
+
+---
+
+If you’d like, I can turn this into:
+
+* a ready-to-use **OpenAPI additions** for the dashboard endpoints, and
+* a **React RightPanel** skeleton with Tailwind/Recharts wired to DTOs.

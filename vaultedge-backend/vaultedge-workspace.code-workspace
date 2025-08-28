@@ -1,0 +1,18 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"name": "vaultedge-frontend",
+			"path": "../vaultedge-frontend"
+		},
+		{
+			"name": "vaultedge-docker",
+			"path": "../vaultedge-docker"
+		}
+	],
+	"settings": {
+		"java.compile.nullAnalysis.mode": "automatic"
+	}
+}

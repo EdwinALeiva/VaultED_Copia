@@ -1,0 +1,57 @@
+INSERT INTO audit_action_type (id, code, name) VALUES
+(1, 'LOGIN', 'Login'),
+(2, 'UPLOAD', 'Upload'),
+(3, 'DOWNLOAD', 'Download'),
+(4, 'DELETE', 'Delete'),
+(5, 'BOX_CREATE', 'Create SafeBox'),
+(6, 'BOX_STATUS_CHANGE', 'SafeBox Status Change'),
+(7, 'MFA_SETUP', 'MFA Setup'),
+(8, 'KEY_ROTATE', 'Key Rotation'),
+(9, 'ACCESS_DENIED', 'Access Denied'),
+(10, 'E_SIGN_START', 'E-Sign Workflow Started'),
+(11, 'E_SIGN_SIGNED', 'E-Sign Document Signed'),
+(12, 'E_SIGN_COMPLETE', 'E-Sign Workflow Completed'),
+(13, 'E_SIGN_REVOKE', 'E-Sign Workflow Revoked');
+
+INSERT INTO file_type (id, code, name, description) VALUES
+(1, 'PDF', 'PDF Document', 'Portable Document Format'),
+(2, 'OFFICE_DOC', 'Office Document', 'Microsoft Word or similar'),
+(3, 'OFFICE_SHEET', 'Office Sheet', 'Microsoft Excel or similar'),
+(4, 'OFFICE_SLIDE', 'Office Slide', 'Microsoft PowerPoint or similar'),
+(5, 'IMAGE', 'Image File', 'JPEG, PNG, GIF, etc.'),
+(6, 'AUDIO', 'Audio File', 'MP3, WAV, etc.'),
+(7, 'VIDEO', 'Video File', 'MP4, MOV, etc.'),
+(8, 'ARCHIVE_ZIP', 'Archive File', 'ZIP, RAR, 7z, etc.'),
+(9, 'CSV', 'CSV File', 'Comma-separated values'),
+(10, 'XML', 'XML File', 'Extensible Markup Language'),
+(11, 'JSON', 'JSON File', 'JavaScript Object Notation'),
+(12, 'PLAINTEXT', 'Plain Text File', 'TXT file'),
+(13, 'CONTRACT', 'Contract Document', 'Legal contract'),
+(14, 'OTHER', 'Other', 'Uncategorized file type');
+
+INSERT INTO safebox_status (id, code, name, description) VALUES
+(1, 'ACTIVE', 'Active', 'The safebox is in normal operation'),
+(2, 'PAST_DUE', 'Past Due', 'The safebox is past its billing due date'),
+(3, 'GRACE', 'Grace Period', 'The safebox is in a grace period after the due date'),
+(4, 'BLOCKED', 'Blocked', 'Access to the safebox is restricted'),
+(5, 'DELETED', 'Deleted', 'The safebox has been deleted');
+
+INSERT INTO roles (id, scope, code, name, description) VALUES
+-- Roles con scope 'vault'
+(1, 'vault', 'VAULT_OWNER', 'Vault Owner', 'Highest permission role in a vault'),
+(2, 'vault', 'VAULT_MANAGER', 'Vault Manager', 'Manages users and policies in a vault'),
+(3, 'vault', 'VAULT_VIEWER', 'Vault Viewer', 'Read-only access to a vault'),
+-- Roles con scope 'safebox'
+(4, 'safebox', 'BOX_OWNER', 'Box Owner', 'Highest permission role in a safebox'),
+(5, 'safebox', 'BOX_MANAGER', 'Box Manager', 'Manages participants and files in a safebox'),
+(6, 'safebox', 'BOX_VIEWER', 'Box Viewer', 'Read-only access to a safebox'),
+(7, 'safebox', 'BOX_VIEW_NO_DL', 'Box Viewer (No Download)', 'Can view files but cannot download them'),
+(8, 'safebox', 'BOX_AUDITOR', 'Box Auditor', 'Can view audit logs of a safebox');
+
+INSERT INTO plans (id, code, max_boxes, box_quota_bytes, storage_tier_default, grace_days, price_monthly_cents, price_annual_cents) VALUES
+(1, 'MICRO', 1, 1073741824, 'cold', 60, 500, 5000),
+(2, 'BASIC', 5, 5368709120, 'cold', 60, 1000, 10000),
+(3, 'PRO', 20, 21474836480, 'standard', 60, 2500, 25000),
+(4, 'ENTERPRISE', 100, 53687091200, 'dynamic', 60, 10000, 100000);
+
+	

@@ -1,0 +1,28 @@
+version: "3.8"
+
+services:
+  vaultedge-db:
+    image: postgres:15
+    container_name: vaultedge-db
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: vaultedge_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - vaultedge_pgdata:/var/lib/postgresql/data
+
+  vaultedge-pgadmin:
+    image: dpage/pgadmin4
+    container_name: vaultedge-pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@vaultedge.dev
+      PGADMIN_DEFAULT_PASSWORD: admin123
+    ports:
+      - "5050:80"
+    depends_on:
+      - vaultedge-db
+
+volumes:
+  vaultedge_pgdata:

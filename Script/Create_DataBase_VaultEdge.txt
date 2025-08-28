@@ -1,0 +1,475 @@
+--
+-- Archivo: create_vaultedge_db_complete.sql
+-- Descripción: Script para crear la base de datos 'vaultedge_db' y todas sus tablas.
+-- Versión: 2.0
+-- Fecha: 2025-08-16
+--
+
+-- Se recomienda ejecutar este script con un usuario con permisos de superusuario
+-- o con los permisos suficientes para crear y eliminar bases de datos.
+
+-- Paso 1: Conectarse a la base de datos 'postgres' (por defecto)
+-- y eliminar la base de datos 'vaultedge_db' si existe.
+-- Esto asegura que el script se pueda ejecutar múltiples veces sin errores.
+DROP DATABASE IF EXISTS vaultedge_db;
+
+-- Paso 2: Crear la base de datos 'vaultedge_db'
+CREATE DATABASE vaultedge_db
+    WITH
+    OWNER = postgres
+    ENCODING = 'UTF8'
+    LOCALE_PROVIDER = 'libc'
+    CONNECTION LIMIT = -1
+    IS_TEMPLATE = False;
+
+-- Paso 3: Conectarse a la nueva base de datos para crear las tablas
+\c vaultedge_db;
+
+-- A continuación, se crea toda la estructura de la base de datos
+
+DO $$
+DECLARE
+    -- Variables para manejar la creación de tablas y la ejecución
+    _status VARCHAR(200);
+BEGIN
+    _status := 'Creating Code and Enumeration Tables...';
+    RAISE NOTICE '%', _status;
+
+    -- 1. Tablas de Códigos y Enumeraciones
+    CREATE TABLE IF NOT EXISTS file_type (
+        id SMALLINT PRIMARY KEY,
+        code VARCHAR(24) UNIQUE NOT NULL,
+        name VARCHAR(80) NOT NULL,
+        description TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS safebox_status (
+        id SMALLINT PRIMARY KEY,
+        code VARCHAR(24) UNIQUE NOT NULL,
+        name VARCHAR(80) NOT NULL,
+        description TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS roles (
+        id SMALLINT PRIMARY KEY,
+        scope VARCHAR(16) NOT NULL,
+        code VARCHAR(40) UNIQUE NOT NULL,
+        name VARCHAR(80) NOT NULL,
+        description TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS audit_action_type (
+        id SMALLINT PRIMARY KEY,
+        code VARCHAR(40) UNIQUE NOT NULL,
+        name VARCHAR(80) NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS plans (
+        id SMALLINT PRIMARY KEY,
+        code VARCHAR(24) UNIQUE NOT NULL,
+        max_boxes INT NOT NULL,
+        box_quota_bytes BIGINT NOT NULL,
+        storage_tier_default VARCHAR(16) NOT NULL,
+        grace_days INT NOT NULL,
+        price_monthly_cents INT NOT NULL,
+        price_annual_cents INT NOT NULL
+    );
+
+    _status := 'Creating Identity & Access Tables...';
+    RAISE NOTICE '%', _status;
+
+    -- 2. Tablas de Identidad y Acceso
+    CREATE TABLE IF NOT EXISTS users (
+        id UUID PRIMARY KEY,
+        username VARCHAR(80) UNIQUE NOT NULL,
+        email VARCHAR(255) UNIQUE NOT NULL,
+        email_verified BOOLEAN NOT NULL DEFAULT FALSE,
+        password_hash TEXT NOT NULL,
+        first_name VARCHAR(120),
+        last_name VARCHAR(120),
+        status VARCHAR(32) NOT NULL DEFAULT 'active',
+        created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMP WITH TIME ZONE,
+        last_login_at TIMESTAMP WITH TIME ZONE
+    );
+
+    CREATE TABLE IF NOT EXISTS user_auth_providers (
+        id UUID PRIMARY KEY,
+        user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        provider VARCHAR(40) NOT NULL,
+        provider_user_id VARCHAR(255) NOT NULL,
+        linked_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+        UNIQUE (provider, provider_user_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS user_mfa (
+        id UUID PRIMARY KEY,
+        user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        type VARCHAR(16) NOT NULL,
+        secret_ref VARCHAR(255) NOT NULL,
+        enabled BOOLEAN NOT NULL DEFAULT FALSE,
+        recovery_codes_hash TEXT,
+        UNIQUE (user_id, type)
+    );
+
+    CREATE TABLE IF NOT EXISTS permissions (
+        role_id SMALLINT NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
+        permission_code VARCHAR(40) NOT NULL,
+        PRIMARY KEY (role_id, permission_code)
+    );
+
+    _status := 'Creating Tenancy and Grouping Tables...';
+    RAISE NOTICE '%', _status;
+
+    -- 3. Tablas de Tenencia y Agrupación
+    CREATE TABLE IF NOT EXISTS organizations (
+        id UUID PRIMARY KEY,
+        name VARCHAR(160) NOT NULL,
+        slug VARCHAR(80) UNIQUE NOT NULL,
+        status VARCHAR(16) NOT NULL DEFAULT 'active',
+        billing_email VARCHAR(255),
+        country VARCHAR(2),
+        created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS vaults (
+        id UUID PRIMARY KEY,
+        org_id UUID REFERENCES organizations(id) ON DELETE SET NULL,
+        owner_user_id UUID NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+        name VARCHAR(160) NOT NULL,
+        description TEXT,
+        storage_tier VARCHAR(16) NOT NULL DEFAULT 'cold',
+        created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS vault_settings (
+        vault_id UUID PRIMARY KEY REFERENCES vaults(id) ON DELETE CASCADE,
+        default_grace_days INT NOT NULL DEFAULT 60,
+        default_box_quota_bytes BIGINT NOT NULL DEFAULT 1073741824,
+        max_boxes INT
+    );
+
+    _status := 'Creating Core Safebox Tables...';
+    RAISE NOTICE '%', _status;
+
+    -- 4. Tablas del Núcleo de la Caja de Seguridad
+    CREATE TABLE IF NOT EXISTS safeboxes (
+        id UUID PRIMARY KEY,
+        vault_id UUID NOT NULL REFERENCES vaults(id) ON DELETE CASCADE,
+        status_id SMALLINT NOT NULL REFERENCES safebox_status(id) ON DELETE RESTRICT,
+        primary_client_id UUID NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+        name VARCHAR(160) NOT NULL,
+        description TEXT,
+        quota_bytes BIGINT NOT NULL,
+        used_bytes BIGINT NOT NULL DEFAULT 0,
+        due_date DATE,
+        grace_until DATE,
+        blocked_at TIMESTAMP WITH TIME ZONE,
+        created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMP WITH TIME ZONE
+    );
+
+    CREATE TABLE IF NOT EXISTS safebox_policies (
+        safebox_id UUID PRIMARY KEY REFERENCES safeboxes(id) ON DELETE CASCADE,
+        allow_read_with_single_key BOOLEAN NOT NULL DEFAULT FALSE,
+        require_two_keys_for_download BOOLEAN NOT NULL DEFAULT TRUE,
+        require_two_keys_for_delete BOOLEAN NOT NULL DEFAULT TRUE,
+        allowed_file_types TEXT,
+        max_file_size_bytes BIGINT
+    );
+
+    CREATE TABLE IF NOT EXISTS vault_members (
+        vault_id UUID NOT NULL REFERENCES vaults(id) ON DELETE CASCADE,
+        user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        role_id SMALLINT NOT NULL REFERENCES roles(id) ON DELETE RESTRICT,
+        added_by UUID REFERENCES users(id) ON DELETE SET NULL,
+        added_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+        status VARCHAR(16) NOT NULL DEFAULT 'active',
+        PRIMARY KEY (vault_id, user_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS safebox_participants (
+        safebox_id UUID NOT NULL REFERENCES safeboxes(id) ON DELETE CASCADE,
+        user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        role_id SMALLINT NOT NULL REFERENCES roles(id) ON DELETE RESTRICT,
+        can_read BOOLEAN NOT NULL DEFAULT TRUE,
+        can_download BOOLEAN NOT NULL DEFAULT FALSE,
+        can_upload BOOLEAN NOT NULL DEFAULT FALSE,
+        PRIMARY KEY (safebox_id, user_id)
+    );
+
+    _status := 'Creating Content and Versioning Tables...';
+    RAISE NOTICE '%', _status;
+
+    -- 5. Tablas de Contenido y Versiones
+    CREATE TABLE IF NOT EXISTS files (
+        id UUID PRIMARY KEY,
+        safebox_id UUID NOT NULL REFERENCES safeboxes(id) ON DELETE CASCADE,
+        file_type_id SMALLINT NOT NULL REFERENCES file_type(id) ON DELETE RESTRICT,
+        created_by UUID NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+        current_version INT NOT NULL DEFAULT 1 CHECK (current_version > 0),
+        name VARCHAR(255) NOT NULL,
+        content_type VARCHAR(255),
+        size_bytes BIGINT,
+        created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS file_versions (
+        id UUID PRIMARY KEY,
+        file_id UUID NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+        version_no INT NOT NULL,
+        object_key VARCHAR(512) UNIQUE NOT NULL,
+        sha256 CHAR(64) UNIQUE NOT NULL,
+        size_bytes BIGINT NOT NULL,
+        uploaded_by UUID NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+        uploaded_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+        status VARCHAR(16) NOT NULL DEFAULT 'available',
+        metadata JSONB,
+        UNIQUE (file_id, version_no)
+    );
+
+    CREATE TABLE IF NOT EXISTS content_crypto (
+        file_version_id UUID PRIMARY KEY REFERENCES file_versions(id) ON DELETE CASCADE,
+        aes_algo VARCHAR(16) NOT NULL DEFAULT 'AES-256-GCM',
+        aes_encrypted_for_client TEXT NOT NULL,
+        aes_encrypted_for_provider TEXT NOT NULL,
+        nonce BYTEA NOT NULL,
+        tag BYTEA NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS keys (
+        id UUID PRIMARY KEY,
+        user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        safebox_id UUID REFERENCES safeboxes(id) ON DELETE CASCADE,
+        algo VARCHAR(16) NOT NULL DEFAULT 'RSA-4096',
+        public_key_pem TEXT NOT NULL,
+        fingerprint VARCHAR(128) UNIQUE NOT NULL,
+        status VARCHAR(16) NOT NULL DEFAULT 'active',
+        created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+        rotated_at TIMESTAMP WITH TIME ZONE
+    );
+
+    _status := 'Creating Audit and Observability Tables...';
+    RAISE NOTICE '%', _status;
+
+    -- 6. Tablas de Auditoría y Observabilidad
+    CREATE TABLE IF NOT EXISTS audit_logs (
+        id UUID PRIMARY KEY,
+        action_type_id SMALLINT NOT NULL REFERENCES audit_action_type(id) ON DELETE RESTRICT,
+        user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+        safebox_id UUID REFERENCES safeboxes(id) ON DELETE SET NULL,
+        file_id UUID REFERENCES files(id) ON DELETE SET NULL,
+        file_version_id UUID REFERENCES file_versions(id) ON DELETE SET NULL,
+        result VARCHAR(16) NOT NULL DEFAULT 'SUCCESS',
+        ip INET,
+        user_agent TEXT,
+        details JSONB,
+        created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS key_rotation_events (
+        id UUID PRIMARY KEY,
+        key_id UUID NOT NULL REFERENCES keys(id) ON DELETE CASCADE,
+        performed_by UUID REFERENCES users(id) ON DELETE SET NULL,
+        old_fingerprint VARCHAR(128) NOT NULL,
+        new_fingerprint VARCHAR(128) NOT NULL,
+        rotated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+        reason TEXT
+    );
+
+    _status := 'Creating Billing and Payments Tables...';
+    RAISE NOTICE '%', _status;
+
+    -- 7. Tablas de Planes y Facturación
+    CREATE TABLE IF NOT EXISTS billing_profiles (
+        id UUID PRIMARY KEY,
+        scope VARCHAR(8) NOT NULL,
+        scope_ref UUID NOT NULL,
+        display_name VARCHAR(160) NOT NULL,
+        email VARCHAR(255),
+        tax_id VARCHAR(48),
+        address_json JSONB,
+        default_payment_method_id UUID,
+        created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+        UNIQUE (scope, scope_ref)
+    );
+
+    CREATE TABLE IF NOT EXISTS payment_methods (
+        id UUID PRIMARY KEY,
+        billing_profile_id UUID NOT NULL REFERENCES billing_profiles(id) ON DELETE CASCADE,
+        provider VARCHAR(24) NOT NULL,
+        provider_token VARCHAR(255) NOT NULL,
+        method_type_code VARCHAR(24) NOT NULL,
+        brand_code VARCHAR(24),
+        last4 CHAR(4),
+        exp_month SMALLINT,
+        exp_year SMALLINT,
+        funding VARCHAR(16),
+        label VARCHAR(160),
+        status VARCHAR(16) NOT NULL DEFAULT 'active',
+        created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS subscriptions (
+        id UUID PRIMARY KEY,
+        org_id UUID REFERENCES organizations(id) ON DELETE CASCADE,
+        vault_id UUID REFERENCES vaults(id) ON DELETE CASCADE,
+        safebox_id UUID REFERENCES safeboxes(id) ON DELETE CASCADE,
+        billing_profile_id UUID NOT NULL REFERENCES billing_profiles(id) ON DELETE RESTRICT,
+        plan_id SMALLINT NOT NULL REFERENCES plans(id) ON DELETE RESTRICT,
+        status VARCHAR(16) NOT NULL DEFAULT 'active',
+        current_period_start TIMESTAMP WITH TIME ZONE,
+        current_period_end TIMESTAMP WITH TIME ZONE,
+        due_date DATE,
+        grace_until DATE
+    );
+
+    CREATE TABLE IF NOT EXISTS invoices (
+        id UUID PRIMARY KEY,
+        subscription_id UUID NOT NULL REFERENCES subscriptions(id) ON DELETE RESTRICT,
+        amount_cents INT NOT NULL,
+        currency VARCHAR(8) NOT NULL DEFAULT 'USD',
+        status VARCHAR(16) NOT NULL DEFAULT 'open',
+        billing_profile_snapshot JSONB,
+        due_at TIMESTAMP WITH TIME ZONE,
+        issued_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+        closed_at TIMESTAMP WITH TIME ZONE
+    );
+
+    CREATE TABLE IF NOT EXISTS payments (
+        id UUID PRIMARY KEY,
+        invoice_id UUID NOT NULL REFERENCES invoices(id) ON DELETE RESTRICT,
+        payment_method_id UUID REFERENCES payment_methods(id) ON DELETE SET NULL,
+        provider VARCHAR(24) NOT NULL,
+        provider_charge_id VARCHAR(80),
+        amount_cents INT NOT NULL,
+        currency VARCHAR(8) NOT NULL DEFAULT 'USD',
+        status VARCHAR(24) NOT NULL DEFAULT 'succeeded',
+        method_type_code VARCHAR(24) NOT NULL,
+        brand_code VARCHAR(24),
+        last4 CHAR(4),
+        exp_month SMALLINT,
+        exp_year SMALLINT,
+        funding VARCHAR(16),
+        receipt_url VARCHAR(512),
+        error_code VARCHAR(64),
+        error_message TEXT,
+        paid_at TIMESTAMP WITH TIME ZONE
+    );
+
+    _status := 'Creating Notifications and Operations Tables...';
+    RAISE NOTICE '%', _status;
+
+    -- 8. Tablas de Notificaciones y Operaciones
+    CREATE TABLE IF NOT EXISTS notifications (
+        id UUID PRIMARY KEY,
+        user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+        safebox_id UUID REFERENCES safeboxes(id) ON DELETE SET NULL,
+        channel VARCHAR(16) NOT NULL DEFAULT 'email',
+        template_code VARCHAR(40) NOT NULL,
+        payload JSONB,
+        status VARCHAR(16) NOT NULL DEFAULT 'queued',
+        created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+        sent_at TIMESTAMP WITH TIME ZONE
+    );
+
+    CREATE TABLE IF NOT EXISTS incident_tickets (
+        id UUID PRIMARY KEY,
+        safebox_id UUID REFERENCES safeboxes(id) ON DELETE SET NULL,
+        file_id UUID REFERENCES files(id) ON DELETE SET NULL,
+        opened_by UUID NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+        severity VARCHAR(16) NOT NULL DEFAULT 'low',
+        status VARCHAR(16) NOT NULL DEFAULT 'open',
+        title VARCHAR(160) NOT NULL,
+        description TEXT,
+        created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+        closed_at TIMESTAMP WITH TIME ZONE
+    );
+
+    _status := 'Creating E-Sign and Blockchain Tables...';
+    RAISE NOTICE '%', _status;
+
+    -- 9. Tablas de Firma Digital y Blockchain
+    CREATE TABLE IF NOT EXISTS e_sign_workflows (
+        id UUID PRIMARY KEY,
+        safebox_id UUID NOT NULL REFERENCES safeboxes(id) ON DELETE CASCADE,
+        file_version_id UUID NOT NULL REFERENCES file_versions(id) ON DELETE CASCADE,
+        created_by UUID NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+        status VARCHAR(16) NOT NULL DEFAULT 'draft',
+        mode VARCHAR(16) NOT NULL DEFAULT 'parallel',
+        expires_at TIMESTAMP WITH TIME ZONE,
+        blockchain_network VARCHAR(16) DEFAULT 'none',
+        on_chain_policy VARCHAR(16) DEFAULT 'final_receipt',
+        metadata JSONB
+    );
+
+    CREATE TABLE IF NOT EXISTS e_sign_participants (
+        id UUID PRIMARY KEY,
+        workflow_id UUID NOT NULL REFERENCES e_sign_workflows(id) ON DELETE CASCADE,
+        user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+        display_name VARCHAR(160) NOT NULL,
+        email VARCHAR(255),
+        role VARCHAR(16) NOT NULL DEFAULT 'signer',
+        order_index INT,
+        public_key_ref VARCHAR(255),
+        status VARCHAR(16) NOT NULL DEFAULT 'pending',
+        UNIQUE (workflow_id, email)
+    );
+
+    CREATE TABLE IF NOT EXISTS blockchain_tx (
+        id UUID PRIMARY KEY,
+        file_version_id UUID REFERENCES file_versions(id) ON DELETE SET NULL,
+        audit_id UUID REFERENCES audit_logs(id) ON DELETE SET NULL,
+        network VARCHAR(16) NOT NULL DEFAULT 'polygon',
+        tx_hash VARCHAR(80) UNIQUE,
+        payload_hash CHAR(64) NOT NULL,
+        tx_type VARCHAR(16) NOT NULL DEFAULT 'notarization',
+        created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+        confirmed_at TIMESTAMP WITH TIME ZONE,
+        status VARCHAR(16) NOT NULL DEFAULT 'submitted'
+    );
+
+    CREATE TABLE IF NOT EXISTS e_sign_events (
+        id UUID PRIMARY KEY,
+        workflow_id UUID NOT NULL REFERENCES e_sign_workflows(id) ON DELETE CASCADE,
+        participant_id UUID NOT NULL REFERENCES e_sign_participants(id) ON DELETE RESTRICT,
+        file_version_id UUID REFERENCES file_versions(id) ON DELETE SET NULL,
+        blockchain_tx_id UUID REFERENCES blockchain_tx(id) ON DELETE SET NULL,
+        event_type VARCHAR(16) NOT NULL DEFAULT 'signed',
+        signature_alg VARCHAR(24),
+        signature_hash CHAR(64),
+        signature_envelope_ref VARCHAR(512),
+        details JSONB,
+        created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS e_sign_artifacts (
+        id UUID PRIMARY KEY,
+        workflow_id UUID NOT NULL REFERENCES e_sign_workflows(id) ON DELETE CASCADE,
+        participant_id UUID REFERENCES e_sign_participants(id) ON DELETE SET NULL,
+        artifact_type VARCHAR(32) NOT NULL,
+        object_key VARCHAR(512) UNIQUE NOT NULL,
+        sha256 CHAR(64) NOT NULL,
+        created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+    );
+
+    _status := 'Creating Configuration Table...';
+    RAISE NOTICE '%', _status;
+
+    -- 10. Tabla de Configuración
+    CREATE TABLE IF NOT EXISTS config (
+        id UUID PRIMARY KEY,
+        scope VARCHAR(16) NOT NULL,
+        scope_ref UUID,
+        key VARCHAR(120) NOT NULL,
+        value TEXT NOT NULL,
+        type VARCHAR(8) NOT NULL DEFAULT 'string',
+        effective_from TIMESTAMP WITH TIME ZONE,
+        effective_to TIMESTAMP WITH TIME ZONE,
+        UNIQUE (scope, scope_ref, key, effective_from)
+    );
+
+    _status := 'All tables created successfully!';
+    RAISE NOTICE '%', _status;
+
+END $$;

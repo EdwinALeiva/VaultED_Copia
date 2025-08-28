@@ -1,0 +1,434 @@
+/* 
+1. Tablas de Códigos y Enumeraciones
+Estas tablas contienen listas de valores fijos que se usan como referencias en otras tablas. Se recomienda crearlas primero.
+*/
+
+CREATE TABLE audit_action_type (
+    id SMALLINT PRIMARY KEY,
+    code VARCHAR(40) NOT NULL,
+    name VARCHAR(80) NOT NULL
+);
+
+CREATE TABLE file_type (
+    id SMALLINT PRIMARY KEY,
+    code VARCHAR(24) NOT NULL,
+    name VARCHAR(80) NOT NULL,
+    description TEXT
+);
+
+CREATE TABLE safebox_status (
+    id SMALLINT PRIMARY KEY,
+    code VARCHAR(24) NOT NULL,
+    name VARCHAR(80) NOT NULL,
+    description TEXT
+);
+
+CREATE TABLE roles (
+    id SMALLINT PRIMARY KEY,
+    scope VARCHAR(16) NOT NULL,
+    code VARCHAR(40) UNIQUE NOT NULL,
+    name VARCHAR(80) NOT NULL,
+    description TEXT
+);
+
+CREATE TABLE plans (
+    id SMALLINT PRIMARY KEY,
+    code VARCHAR(24) UNIQUE NOT NULL,
+    max_boxes INT NOT NULL,
+    box_quota_bytes BIGINT NOT NULL,
+    storage_tier_default VARCHAR(16) NOT NULL,
+    grace_days INT NOT NULL,
+    price_monthly_cents INT NOT NULL,
+    price_annual_cents INT NOT NULL
+);
+
+/*
+2. Tablas de Identidad y Acceso
+Estas tablas gestionan usuarios, roles, permisos y la membresía en bóvedas y cajas de seguridad.
+*/
+CREATE TABLE users (
+    id UUID PRIMARY KEY,
+    username VARCHAR(80) UNIQUE NOT NULL,
+    email VARCHAR(255) UNIQUE NOT NULL,
+    email_verified BOOLEAN NOT NULL DEFAULT FALSE,
+    password_hash TEXT NOT NULL,
+    first_name VARCHAR(120),
+    last_name VARCHAR(120),
+    status VARCHAR(32) NOT NULL DEFAULT 'active',
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP,
+    last_login_at TIMESTAMP
+);
+
+CREATE TABLE user_auth_providers (
+    id UUID PRIMARY KEY,
+    user_id UUID NOT NULL REFERENCES users(id),
+    provider VARCHAR(40) NOT NULL,
+    provider_user_id VARCHAR(255) NOT NULL,
+    linked_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE user_mfa (
+    id UUID PRIMARY KEY,
+    user_id UUID NOT NULL REFERENCES users(id),
+    type VARCHAR(16) NOT NULL,
+    secret_ref VARCHAR(255) NOT NULL,
+    enabled BOOLEAN NOT NULL DEFAULT FALSE,
+    recovery_codes_hash TEXT
+);
+
+CREATE TABLE permissions (
+    role_id SMALLINT REFERENCES roles(id),
+    permission_code VARCHAR(40) NOT NULL,
+    PRIMARY KEY (role_id, permission_code)
+);
+
+CREATE TABLE vault_members (
+    id UUID PRIMARY KEY,
+    vault_id UUID NOT NULL,
+    user_id UUID NOT NULL REFERENCES users(id),
+    role_id SMALLINT NOT NULL REFERENCES roles(id),
+    added_by UUID REFERENCES users(id),
+    added_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    status VARCHAR(16) NOT NULL DEFAULT 'active'
+);
+
+CREATE TABLE safebox_participants (
+    id UUID PRIMARY KEY,
+    safebox_id UUID NOT NULL,
+    user_id UUID NOT NULL REFERENCES users(id),
+    role_id SMALLINT NOT NULL REFERENCES roles(id),
+    can_read BOOLEAN NOT NULL DEFAULT TRUE,
+    can_download BOOLEAN NOT NULL DEFAULT FALSE,
+    can_upload BOOLEAN NOT NULL DEFAULT FALSE
+);
+
+/*
+3. Tablas de Tenencia y Agrupación
+Estas tablas definen la estructura multitenant y de agrupamiento del sistema.
+*/
+CREATE TABLE organizations (
+    id UUID PRIMARY KEY,
+    name VARCHAR(160) NOT NULL,
+    slug VARCHAR(80) UNIQUE NOT NULL,
+    status VARCHAR(16) NOT NULL DEFAULT 'active',
+    billing_email VARCHAR(255),
+    country VARCHAR(2),
+    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE vaults (
+    id UUID PRIMARY KEY,
+    org_id UUID REFERENCES organizations(id),
+    owner_user_id UUID NOT NULL REFERENCES users(id),
+    name VARCHAR(160) NOT NULL,
+    description TEXT,
+    storage_tier VARCHAR(16) NOT NULL DEFAULT 'cold',
+    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE vault_settings (
+    vault_id UUID PRIMARY KEY REFERENCES vaults(id),
+    default_grace_days INT NOT NULL DEFAULT 60,
+    default_box_quota_bytes BIGINT NOT NULL DEFAULT 1073741824,
+    max_boxes INT
+);
+
+/*
+4. Tablas del Núcleo de la Caja de Seguridad
+Estas tablas son fundamentales para la funcionalidad de la caja de seguridad, incluyendo políticas y claves de cifrado.
+*/
+CREATE TABLE safeboxes (
+    id UUID PRIMARY KEY,
+    vault_id UUID NOT NULL REFERENCES vaults(id),
+    status_id SMALLINT NOT NULL REFERENCES safebox_status(id),
+    primary_client_id UUID NOT NULL REFERENCES users(id),
+    name VARCHAR(160) NOT NULL,
+    description TEXT,
+    quota_bytes BIGINT NOT NULL,
+    used_bytes BIGINT NOT NULL DEFAULT 0,
+    due_date DATE,
+    grace_until DATE,
+    blocked_at TIMESTAMP,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP
+);
+
+CREATE TABLE keys (
+    id UUID PRIMARY KEY,
+    user_id UUID NOT NULL REFERENCES users(id),
+    safebox_id UUID REFERENCES safeboxes(id),
+    algo VARCHAR(16) NOT NULL DEFAULT 'RSA-4096',
+    public_key_pem TEXT NOT NULL,
+    fingerprint VARCHAR(128) UNIQUE NOT NULL,
+    status VARCHAR(16) NOT NULL DEFAULT 'active',
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    rotated_at TIMESTAMP
+);
+
+CREATE TABLE safebox_policies (
+    safebox_id UUID PRIMARY KEY REFERENCES safeboxes(id),
+    allow_read_with_single_key BOOLEAN NOT NULL DEFAULT FALSE,
+    require_two_keys_for_download BOOLEAN NOT NULL DEFAULT TRUE,
+    require_two_keys_for_delete BOOLEAN NOT NULL DEFAULT TRUE,
+    allowed_file_types TEXT,
+    max_file_size_bytes BIGINT
+);
+
+/*
+5. Tablas de Contenido y Versiones
+Estas tablas manejan el almacenamiento de archivos y sus versiones.
+*/
+CREATE TABLE files (
+    id UUID PRIMARY KEY,
+    safebox_id UUID NOT NULL REFERENCES safeboxes(id),
+    file_type_id SMALLINT NOT NULL REFERENCES file_type(id),
+    created_by UUID NOT NULL REFERENCES users(id),
+    current_version INT NOT NULL DEFAULT 1,
+    name VARCHAR(255) NOT NULL,
+    content_type VARCHAR(255),
+    size_bytes BIGINT,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE file_versions (
+    id UUID PRIMARY KEY,
+    file_id UUID NOT NULL REFERENCES files(id),
+    version_no INT NOT NULL,
+    object_key VARCHAR(512) NOT NULL,
+    sha256 CHAR(64) NOT NULL,
+    size_bytes BIGINT NOT NULL,
+    uploaded_by UUID NOT NULL REFERENCES users(id),
+    uploaded_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    status VARCHAR(16) NOT NULL DEFAULT 'available',
+    metadata JSONB
+);
+
+CREATE TABLE content_crypto (
+    file_version_id UUID PRIMARY KEY REFERENCES file_versions(id),
+    aes_algo VARCHAR(16) NOT NULL DEFAULT 'AES-256-GCM',
+    aes_encrypted_for_client TEXT NOT NULL,
+    aes_encrypted_for_provider TEXT NOT NULL,
+    nonce BYTEA NOT NULL,
+    tag BYTEA NOT NULL
+);
+
+/*
+6. Tablas de Auditoría y Observabilidad
+Estas tablas registran eventos de seguridad y acciones del sistema para su auditoría.
+*/
+CREATE TABLE audit_logs (
+    id UUID PRIMARY KEY,
+    action_type_id SMALLINT NOT NULL REFERENCES audit_action_type(id),
+    user_id UUID REFERENCES users(id),
+    safebox_id UUID REFERENCES safeboxes(id),
+    file_id UUID REFERENCES files(id),
+    file_version_id UUID REFERENCES file_versions(id),
+    result VARCHAR(16) NOT NULL DEFAULT 'SUCCESS',
+    ip INET,
+    user_agent TEXT,
+    details JSONB,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE key_rotation_events (
+    id UUID PRIMARY KEY,
+    key_id UUID NOT NULL REFERENCES keys(id),
+    performed_by UUID REFERENCES users(id),
+    old_fingerprint VARCHAR(128) NOT NULL,
+    new_fingerprint VARCHAR(128) NOT NULL,
+    rotated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    reason TEXT
+);
+
+/*
+7. Tablas de Planes y Facturación
+Estas tablas manejan los planes, suscripciones, facturas y pagos.
+*/
+CREATE TABLE billing_profiles (
+    id UUID PRIMARY KEY,
+    scope VARCHAR(8) NOT NULL DEFAULT 'org',
+    scope_ref UUID NOT NULL,
+    display_name VARCHAR(160) NOT NULL,
+    email VARCHAR(255),
+    tax_id VARCHAR(48),
+    address_json JSONB,
+    default_payment_method_id UUID,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE payment_methods (
+    id UUID PRIMARY KEY,
+    billing_profile_id UUID NOT NULL REFERENCES billing_profiles(id),
+    provider VARCHAR(24) NOT NULL,
+    provider_token VARCHAR(255) NOT NULL,
+    method_type_code VARCHAR(24) NOT NULL DEFAULT 'CARD',
+    brand_code VARCHAR(24) NOT NULL DEFAULT 'VISA',
+    last4 CHAR(4),
+    exp_month SMALLINT,
+    exp_year SMALLINT,
+    funding VARCHAR(16),
+    label VARCHAR(160),
+    status VARCHAR(16) NOT NULL DEFAULT 'active',
+    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE subscriptions (
+    id UUID PRIMARY KEY,
+    org_id UUID REFERENCES organizations(id),
+    vault_id UUID REFERENCES vaults(id),
+    safebox_id UUID REFERENCES safeboxes(id),
+    billing_profile_id UUID NOT NULL REFERENCES billing_profiles(id),
+    plan_id SMALLINT NOT NULL REFERENCES plans(id),
+    status VARCHAR(16) NOT NULL DEFAULT 'active',
+    current_period_start TIMESTAMP,
+    current_period_end TIMESTAMP,
+    due_date DATE,
+    grace_until DATE
+);
+
+CREATE TABLE invoices (
+    id UUID PRIMARY KEY,
+    subscription_id UUID NOT NULL REFERENCES subscriptions(id),
+    amount_cents INT NOT NULL,
+    currency VARCHAR(8) NOT NULL DEFAULT 'USD',
+    status VARCHAR(16) NOT NULL DEFAULT 'open',
+    billing_profile_snapshot JSONB,
+    due_at TIMESTAMP,
+    issued_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    closed_at TIMESTAMP
+);
+
+CREATE TABLE payments (
+    id UUID PRIMARY KEY,
+    invoice_id UUID NOT NULL REFERENCES invoices(id),
+    payment_method_id UUID REFERENCES payment_methods(id),
+    provider VARCHAR(24) NOT NULL,
+    provider_charge_id VARCHAR(80),
+    amount_cents INT NOT NULL,
+    currency VARCHAR(8) NOT NULL DEFAULT 'USD',
+    status VARCHAR(24) NOT NULL DEFAULT 'succeeded',
+    method_type_code VARCHAR(24) NOT NULL,
+    brand_code VARCHAR(24),
+    last4 CHAR(4),
+    exp_month SMALLINT,
+    exp_year SMALLINT,
+    funding VARCHAR(16),
+    receipt_url VARCHAR(512),
+    error_code VARCHAR(64),
+    error_message TEXT,
+    paid_at TIMESTAMP
+);
+
+/*
+8. Tablas de Notificaciones y Operaciones
+Estas tablas son para la gestión de notificaciones y tickets de incidentes.
+*/
+CREATE TABLE notifications (
+    id UUID PRIMARY KEY,
+    user_id UUID REFERENCES users(id),
+    safebox_id UUID REFERENCES safeboxes(id),
+    channel VARCHAR(16) NOT NULL DEFAULT 'email',
+    template_code VARCHAR(40) NOT NULL,
+    payload JSONB,
+    status VARCHAR(16) NOT NULL DEFAULT 'queued',
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    sent_at TIMESTAMP
+);
+
+CREATE TABLE incident_tickets (
+    id UUID PRIMARY KEY,
+    safebox_id UUID REFERENCES safeboxes(id),
+    file_id UUID REFERENCES files(id),
+    opened_by UUID NOT NULL REFERENCES users(id),
+    severity VARCHAR(16) NOT NULL DEFAULT 'low',
+    status VARCHAR(16) NOT NULL DEFAULT 'open',
+    title VARCHAR(160) NOT NULL,
+    description TEXT,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    closed_at TIMESTAMP
+);
+
+/*
+. Tablas de Firma Digital y Blockchain
+Estas tablas soportan la funcionalidad de firma digital y la integración opcional con blockchain.
+*/
+CREATE TABLE e_sign_workflows (
+    id UUID PRIMARY KEY,
+    safebox_id UUID NOT NULL REFERENCES safeboxes(id),
+    file_version_id UUID NOT NULL REFERENCES file_versions(id),
+    created_by UUID NOT NULL REFERENCES users(id),
+    status VARCHAR(16) NOT NULL DEFAULT 'draft',
+    mode VARCHAR(16) NOT NULL DEFAULT 'parallel',
+    expires_at TIMESTAMP,
+    blockchain_network VARCHAR(16) DEFAULT 'none',
+    on_chain_policy VARCHAR(16) DEFAULT 'final_receipt',
+    metadata JSONB
+);
+
+CREATE TABLE e_sign_participants (
+    id UUID PRIMARY KEY,
+    workflow_id UUID NOT NULL REFERENCES e_sign_workflows(id),
+    user_id UUID REFERENCES users(id),
+    display_name VARCHAR(160) NOT NULL,
+    email VARCHAR(255),
+    role VARCHAR(16) NOT NULL DEFAULT 'signer',
+    order_index INT,
+    public_key_ref VARCHAR(255),
+    status VARCHAR(16) NOT NULL DEFAULT 'pending'
+);
+
+CREATE TABLE e_sign_events (
+    id UUID PRIMARY KEY,
+    workflow_id UUID NOT NULL REFERENCES e_sign_workflows(id),
+    participant_id UUID NOT NULL REFERENCES e_sign_participants(id),
+    file_version_id UUID REFERENCES file_versions(id),
+    blockchain_tx_id UUID,
+    event_type VARCHAR(16) NOT NULL DEFAULT 'signed',
+    signature_alg VARCHAR(24),
+    signature_hash CHAR(64),
+    signature_envelope_ref VARCHAR(512),
+    details JSONB,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE e_sign_artifacts (
+    id UUID PRIMARY KEY,
+    workflow_id UUID NOT NULL REFERENCES e_sign_workflows(id),
+    participant_id UUID REFERENCES e_sign_participants(id),
+    artifact_type VARCHAR(32) NOT NULL,
+    object_key VARCHAR(512) NOT NULL,
+    sha256 CHAR(64) NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE blockchain_tx (
+    id UUID PRIMARY KEY,
+    file_version_id UUID REFERENCES file_versions(id),
+    audit_id UUID REFERENCES audit_logs(id),
+    network VARCHAR(16) NOT NULL DEFAULT 'polygon',
+    tx_hash VARCHAR(80),
+    payload_hash CHAR(64) NOT NULL,
+    tx_type VARCHAR(16) NOT NULL DEFAULT 'notarization',
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    confirmed_at TIMESTAMP,
+    status VARCHAR(16) NOT NULL DEFAULT 'submitted'
+);
+
+/*
+10. Tabla de Configuración
+Esta tabla centraliza la configuración de la aplicación, permitiendo una fácil personalización.
+*/
+CREATE TABLE config (
+    id UUID PRIMARY KEY,
+    scope VARCHAR(16) NOT NULL,
+    scope_ref UUID,
+    key VARCHAR(120) NOT NULL,
+    value TEXT NOT NULL,
+    type VARCHAR(8) NOT NULL DEFAULT 'string',
+    effective_from TIMESTAMP,
+    effective_to TIMESTAMP
+);
+
+
+

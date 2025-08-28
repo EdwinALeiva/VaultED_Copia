@@ -1,0 +1,422 @@
+Here’s a **focused Product Requirements Prompt (PRP)** for **VaultEdge – Encryption & Key Management** only, in **Markdown**, written so **any developer or AI code assistant** can implement it precisely.
+
+## Implementation Status Preface (2025-08-15)
+
+This spec is forward-looking. Current codebase status vs. this cryptography PRP:
+
+Legend: DONE (implemented), READY (can implement immediately with low risk), BLOCKED (needs prerequisite), PARTIAL (some supporting logic present), PLANNED (intended but sizable), ALT (alternative recommended first).
+
+| Section | Topic | Status | Notes / Prerequisites |
+|---------|-------|--------|-----------------------|
+| 0 | Goals/Non-Goals | READY | Architectural direction only. |
+| 1 | Crypto Model | PLANNED | Need manifest + key wrapping scaffolds. |
+| 2 | Algorithms & Params | READY | Library selection (WebCrypto + BouncyCastle/Tink) pending. |
+| 3 | Key Hierarchy & Storage | BLOCKED | No key registry schema/endpoints yet. |
+| 4 | Artifacts & Paths | PLANNED | Current FS layout lacks meta/manifest separation. |
+| 5 | Manifest | BLOCKED | SafeBox create flow doesn’t emit manifest. |
+| 6.1 | Upload (client crypto) | BLOCKED | Plain uploads only; must add client AES/X25519. |
+| 6.2 | Download (dual approval) | BLOCKED | No approval entities/endpoints. |
+| 6.3 | Share / Rewrap | BLOCKED | Depends on manifest & wraps. |
+| 6.4 | Move SafeBox | PARTIAL | Logical move exists; crypto implications absent. |
+| 7 | Dual-Key Canonical Payload | READY | Can implement persistence + signature verify now. |
+| 8 | Backend API | PARTIAL | Basic storage/auth; need crypto/approval routes. |
+| 9 | Audit & Observability | PARTIAL | Logging present; structured audit store missing. |
+| 10 | Rotation/Revocation | BLOCKED | Requires key lifecycle model. |
+| 11 | Error Codes | READY | Can reserve and integrate with exception handler. |
+| 12 | Acceptance Criteria | PLANNED | To validate after phases 1–3 complete. |
+| 13 | Implementation Notes | READY | Awaiting earlier phases. |
+| 14 | Prompt Hooks | READY | Use post-registry + approvals scaffolding. |
+
+### Recommended Incremental Roadmap
+1. Public Key Registry (enc + sig): DB tables + `/api/v1/keys` endpoints.
+2. Approval Domain: `approval_request`, `approval_signature` tables + endpoints (create, sign, list) with Ed25519 verify.
+3. Manifest Skeleton: generate static manifest.json (declared algos, empty recipients) at SafeBox creation.
+4. Client Key Generation MVP: front-end keypair generation (Ed25519/X25519) stored locally; publish public keys.
+5. Encrypt/Wrap Phase 1: Per-file AES-256-GCM + wrap only for SafeBox key (skip multi-recipient until sharing UI). 
+6. Add Recipient + Lazy Rewrap semantics.
+7. Rotation/Revocation policies & audit events.
+
+### Deferrals / Risks
+* Streaming/chunked encryption for large files (optimize after baseline works).
+* Hash anchoring to external ledger (post-MVP).
+* Hardware/secure element key storage (optional enhancement).
+
+### Alternatives
+* Use JWS (EdDSA) for dual approvals instead of custom canonical JSON (reduces canonicalization risk).
+* Start with single approval (feature flag) to unblock early testing, then enforce dual.
+
+This preface will be removed once phases 1–5 reach DONE.
+
+---
+
+# VaultEdge — Encryption & Key Management PRP (Focused Spec)
+
+> Scope: This document defines the cryptographic model, file/manifest artifacts, APIs, and operational flows for VaultEdge’s **zero-knowledge, dual-key** custody. It is **implementation-ready** for frontend (React/TS), backend (Java/Spring Boot), and DevOps.
+> Terms used: **Root Vault** (default parent), **Sub-Vault** (child), **SafeBox** (container of files/versions).
+
+---
+
+## 0) Goals & Non-Goals
+
+**Goals**
+
+* End-to-end confidentiality with **client-side encryption** and **zero plaintext** on the server.
+* **Per-SafeBox keying** for blast-radius isolation and easy SafeBox moves between Vaults.
+* **Dual-key approval** for sensitive actions (download/replace/delete) via **digital signatures** (not threshold crypto).
+* **Multi-recipient envelope encryption** for sharing without re-encrypting file content.
+
+**Non-Goals (this phase)**
+
+* Threshold/secret-sharing decryption.
+* Server-side private key handling or HSM-based unwrap of user data.
+* Full blockchain escrow; only (optional) **hash anchoring** of events.
+
+---
+
+## 1) Cryptographic Model (TL;DR)
+
+* Each file **version** is encrypted with a fresh **DEK** (AES-256-GCM).
+* The DEK is **wrapped** (public-key encrypted) for:
+
+  * the **SafeBox public key**, and
+  * each **authorized user’s public key** (client admin, provider admin, auditors as needed).
+* **Private keys never leave** user devices. Approvals are **Ed25519** signatures over a canonical request payload.
+* **Dual-key approval** = two distinct approver signatures (Client + Provider) recorded and verified before releasing the wrap to a downloader.
+
+---
+
+## 2) Algorithms & Parameters
+
+* **Content encryption:** AES-256-GCM, 96-bit nonce (unique per version/chunk), 128-bit tag.
+* **DEK wrapping:** X25519/ECIES (preferred) or RSA-4096 OAEP-SHA256 (fallback).
+* **Signatures (approvals):** Ed25519 (preferred) or ECDSA P-256.
+* **Hashes:** SHA-256 (integrity), hex lowercase.
+* **Key fingerprints:** SHA-256 over public key DER/PEM bytes → **base64url**.
+
+> Libraries (suggested): Browser **WebCrypto** or **libsodium** (front-end); **BouncyCastle** / **Tink** (Java back-end).
+
+---
+
+## 3) Key Hierarchy & Storage
+
+**Keys**
+
+* **SafeBox Key Pair** (one per SafeBox): `safebox_pub.pem` (stored); private key belongs to SafeBox owner(s), **not** to the server.
+* **User Keys** (per user):
+
+  * Encryption key pair (X25519 or RSA-4096).
+  * Signing key pair (Ed25519/ECDSA).
+
+**Where stored**
+
+* **Server DB**: only **public keys**, metadata & fingerprints.
+* **Object storage**: copy of public keys within SafeBox **manifest** (for offline verification).
+* **Client devices**: all **private keys** (OS keystore/TPM/YubiKey or browser secure storage).
+
+**Fingerprints in UI**
+
+* Always display the **fingerprint** near keys; provide **Copy** and **Download public cert** actions.
+
+---
+
+## 4) Artifacts, Paths & Naming
+
+### 4.1 Virtual path (UI)
+
+```
+{userId}/Root Vault/{Sub-Vault Name}/{SafeBox Name}/
+  .safebox/
+    manifest.json
+    keys/
+      safebox_pub.pem
+      {userPublicKeyId}.pem    # copies of authorized public keys (optional)
+  files/
+    {fileName}.{ext}.enc
+    {fileName}.{ext}.{versionId}.wrap.{recipientKeyId}
+```
+
+### 4.2 Physical path (Object storage — opaque IDs)
+
+```
+/org_{uuid}/vault_{uuid}/box_{uuid}/
+  meta/manifest.json
+  meta/keys/{keyId}.pem
+  data/{fileId}/{versionId}.bin              # encrypted content
+  data/{fileId}/{versionId}.wrap/{keyId}     # one wrap per recipient key
+```
+
+**File naming rules**
+
+* Encrypted payload: `{versionId}.bin` (binary).
+* Wraps: `{versionId}.wrap/{recipientKeyId}` (binary).
+* All IDs are UUIDv4 (or ULIDs), lowercase.
+
+---
+
+## 5) Manifest (Required)
+
+**Location:** `.safebox/manifest.json` (virtual) → `meta/manifest.json` (physical).
+**Purpose:** bind SafeBox identity, crypto parameters, recipients & policy.
+
+**JSON Schema (draft 2020-12)**
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "VaultEdge SafeBox Manifest",
+  "type": "object",
+  "required": ["safebox", "crypto", "policy"],
+  "properties": {
+    "safebox": {
+      "type": "object",
+      "required": ["id", "name", "vaultId", "createdAt"],
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "vaultId": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "crypto": {
+      "type": "object",
+      "required": ["algo", "wrapping", "safeboxPublicKeyId", "safeboxPublicKeyFingerprint", "recipients"],
+      "properties": {
+        "algo": { "enum": ["AES-256-GCM"] },
+        "wrapping": { "enum": ["X25519-ECIES", "RSA-4096-OAEP-SHA256"] },
+        "safeboxPublicKeyId": { "type": "string" },
+        "safeboxPublicKeyFingerprint": { "type": "string" },
+        "recipients": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["role", "userId", "publicKeyId", "fingerprint"],
+            "properties": {
+              "role": { "enum": ["client-admin", "provider-admin", "auditor"] },
+              "userId": { "type": "string" },
+              "publicKeyId": { "type": "string" },
+              "fingerprint": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "policy": {
+      "type": "object",
+      "required": ["dualKeyRequiredFor", "hashAnchoring"],
+      "properties": {
+        "dualKeyRequiredFor": {
+          "type": "array",
+          "items": { "enum": ["download", "replace", "delete"] }
+        },
+        "hashAnchoring": { "type": "boolean" }
+      }
+    }
+  }
+}
+```
+
+**Example**
+
+```json
+{
+  "safebox": {
+    "id": "box_7b2c4e72-8c3a-4a52-9a8b-9f63b8f4e0a2",
+    "name": "Legal-Contracts-2025",
+    "vaultId": "vault_2a9f7c...",
+    "createdAt": "2025-08-10T12:00:00Z"
+  },
+  "crypto": {
+    "algo": "AES-256-GCM",
+    "wrapping": "X25519-ECIES",
+    "safeboxPublicKeyId": "key_f1a2...",
+    "safeboxPublicKeyFingerprint": "u8iGm5t4xk...==",
+    "recipients": [
+      { "role": "client-admin",   "userId": "user_123", "publicKeyId": "key_cafe...", "fingerprint": "abc..." },
+      { "role": "provider-admin", "userId": "user_987", "publicKeyId": "key_babe...", "fingerprint": "def..." }
+    ]
+  },
+  "policy": {
+    "dualKeyRequiredFor": ["download", "replace", "delete"],
+    "hashAnchoring": false
+  }
+}
+```
+
+---
+
+## 6) Core Flows
+
+### 6.1 Upload (client-side)
+
+1. Generate random **DEK** (32 bytes).
+2. Encrypt file → `ciphertext` (AES-256-GCM).
+3. Create **wraps** of DEK for:
+
+   * SafeBox public key (`*.wrap.{safeboxKeyId}`),
+   * each recipient public key (`*.wrap.{recipientKeyId}`).
+4. Upload:
+
+   * `data/{fileId}/{versionId}.bin`
+   * `data/{fileId}/{versionId}.wrap/{keyId}` for each recipient.
+
+**TypeScript pseudo**
+
+```ts
+const dek = crypto.getRandomValues(new Uint8Array(32)); // AES key
+const { ciphertext, nonce, tag } = await aesGcmEncrypt(fileBytes, dek);
+
+for (const key of [safeboxPub, ...recipientPubs]) {
+  const wrapped = await eciesWrap(dek, key); // X25519-ECIES
+  await putObject(`data/${fileId}/${versionId}.wrap/${key.id}`, wrapped);
+}
+
+await putObject(`data/${fileId}/${versionId}.bin`, pack(nonce, tag, ciphertext));
+```
+
+### 6.2 Download (dual-key approval enforced server-side)
+
+1. Client requests download → server creates **Approval Request** (`action=download`, `fileId`, `versionId`).
+2. Two parties sign a **canonical payload** (see §7) with **Ed25519**.
+3. Server verifies both signatures; on success, returns:
+
+   * presigned URL for `*.bin`
+   * the **wrap** for the requester’s `publicKeyId`.
+4. Client unwraps DEK locally → decrypts.
+
+### 6.3 Share (add recipient)
+
+* Add user’s **publicKeyId** to SafeBox recipients.
+* Mark file versions as **rewrap-needed**. Rewrap options:
+
+  * **Lazy rewrap**: on next access by any current recipient, the client unwraps and **uploads a new wrap** for the new recipient.
+  * **Owner-initiated batch**: owner runs a rewrap tool that iterates versions and uploads new wraps.
+* No plaintext DEK ever stored server-side.
+
+### 6.4 Move SafeBox between Vaults/Sub-Vaults
+
+* Update `vaultId` of SafeBox.
+* If target policy is stricter, mark versions as **rewrap-needed**; handle via lazy/batch rewrap.
+* Audit: `SAFEBOX_MOVED {fromVaultId, toVaultId}`.
+
+---
+
+## 7) Dual-Key Approval (Signatures)
+
+**Canonical request JSON (sorted keys; no whitespace changes)**
+
+```json
+{
+  "action": "download",
+  "fileId": "file_...",
+  "versionId": "v1_...",
+  "boxId": "box_...",
+  "requesterId": "user_...",
+  "timestamp": "2025-08-14T12:34:56Z"
+}
+```
+
+**Signature**
+
+* Algorithm: **Ed25519** over UTF-8 bytes of the canonical JSON.
+* Submit `signature` (base64url) + `signingKeyId`.
+
+**Requirement:** server must record **two valid signatures** from distinct roles: `client-admin` and `provider-admin`.
+
+---
+
+## 8) Backend API (Contract Sketch)
+
+```
+POST   /api/v1/keys               # register user public key {type: "enc"|"sig", algo, pem}
+GET    /api/v1/safeboxes/{boxId}/manifest
+
+POST   /api/v1/approvals          # create approval request {action, fileId, versionId}
+POST   /api/v1/approvals/{id}/signatures  # add signature {signingKeyId, signature}
+GET    /api/v1/downloads/{fileId}/{versionId}  # returns presignedBinUrl + wrap for caller's keyId
+
+POST   /api/v1/safeboxes/{boxId}/recipients    # add recipient publicKeyId
+POST   /api/v1/safeboxes/{boxId}/rewrap-tasks  # (optional) enqueue batch rewrap; requires owner key participation
+PATCH  /api/v1/safeboxes/{boxId}               # move vault {vaultId}
+GET    /api/v1/audit?filters...
+```
+
+**Responses**
+
+* `GET /downloads/...` → `{ "binUrl": "...", "wrap": "<base64url>", "nonce": "<b64>", "tag": "<b64>" }`
+
+---
+
+## 9) Audit & Observability
+
+**Event types**
+
+* `KEY_REGISTERED`, `SAFEBOX_CREATED`, `FILE_UPLOADED`, `VERSION_CREATED`,
+  `APPROVAL_REQUESTED`, `APPROVAL_SIGNED`, `DOWNLOAD_GRANTED`, `SAFEBOX_MOVED`,
+  `RECIPIENT_ADDED`, `REWRAP_NEEDED`, `REWRAP_UPLOADED`, `POLICY_CHANGED`.
+
+**Fields (all events)**
+
+* `eventId`, `orgId`, `actorId`, `action`, `targetType`, `targetId`, `ip`, `ua`, `result`, `at`.
+
+**Logs**
+
+* JSON with **correlationId** per request; no secrets; record fingerprint hashes, not key material.
+
+---
+
+## 10) Rotation, Revocation, Recovery
+
+* **User key rotation:** add new key, keep old wraps for historic versions. New uploads use new key.
+* **SafeBox key rotation:** generate new SafeBox key; new versions wrap to new key. Old wraps remain valid.
+* **Revocation:** mark key as `revokedAt`; prevent future wraps; existing wraps remain decryptable by holder (cannot retroactively deny).
+* **Recovery (party unavailable):** create **elevated approval** flow with legal attester role; requires Org Admin + Auditor signatures; flagged in audit.
+
+---
+
+## 11) Error Handling (examples)
+
+* `403` `DUAL_KEY_NOT_SATISFIED` (need two valid signatures).
+* `400` `INVALID_SIGNATURE` (bad format or mismatched payload).
+* `404` `WRAP_NOT_FOUND` (no wrap for caller’s key).
+* `409` `REWRAP_REQUIRED` (policy changed; instruct lazy/batch rewrap).
+* `422` `UNSUPPORTED_KEY_ALGO`.
+
+---
+
+## 12) Acceptance Criteria (must pass)
+
+1. **Zero-knowledge:** no plaintext file or DEK ever leaves the client.
+2. **Multi-recipient:** adding a recipient enables decrypt without re-encrypting content.
+3. **Dual-key:** sensitive actions require **two** valid signatures from distinct roles.
+4. **Movement:** moving a SafeBox between Vaults preserves data and audit trail; rewrap marks applied as needed.
+5. **Integrity:** SHA-256 hash of each version recorded; tamper produces incident log.
+6. **A11y & UX:** fingerprints visible; “Export Key Manifest” available.
+7. **Observability:** every action produces an `AuditEvent` with correlationId.
+
+---
+
+## 13) Implementation Notes
+
+**Front-end (React/TS)**
+
+* Use WebCrypto/libsodium for AES-GCM, X25519/ECIES, Ed25519.
+* Store private keys in WebCrypto keystore or OS secure storage.
+* Implement **lazy rewrap** on download by existing recipients when new recipients are added.
+
+**Back-end (Spring Boot)**
+
+* Validate signatures (Ed25519).
+* Issue short-lived **presigned URLs** for `*.bin`; return the **correct wrap** for caller’s `publicKeyId`.
+* Append-only **AuditEvent** store; immutable IDs; optional hash anchoring (future).
+
+---
+
+## 14) Prompt Hooks (for AI assistants)
+
+* **“Generate TypeScript helpers for AES-GCM (encrypt/decrypt) and X25519 ECIES wrap/unwrap; expose `encryptFileVersion`, `createWrap`, `unwrapWrap`.”**
+* **“Implement Spring Boot endpoints for dual-key approvals: create request, accept signatures (Ed25519), and gate download until two distinct roles have signed.”**
+* **“Write a rewrap client job: given manifest + my private key, iterate versions and upload new wraps for `publicKeyId=X`.”**
+
+---
+
+**End of spec.**
